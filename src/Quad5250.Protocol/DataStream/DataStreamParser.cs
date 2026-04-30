@@ -128,7 +128,14 @@ public sealed class DataStreamParser
                 if (IsOrder(b))
                     i = ApplyOrder(data, i);
                 else
-                    i++; // unknown low byte (NULL field-init bytes, etc.) — skip
+                {
+                    // NULL (0x00) is a real cell — display as space and advance
+                    // the buffer position. Skipping without advancing shifts
+                    // every subsequent attr byte left, producing stray field
+                    // markers in the wrong columns (e.g. WRKUSRJOB row 2).
+                    _screen.Write(' ');
+                    i++;
+                }
             }
             else if (b < 0x40)
             {
@@ -232,15 +239,19 @@ public sealed class DataStreamParser
     {
         // Observed SF format from real IBM i traffic:
         //   1D <FFW1> <FFW2> <AttrByte> <LenHi> <LenLo>
-        // FFW info is recorded with the attribute mark so RebuildFields can
-        // copy it onto the field; the explicit length is informational — the
-        // scan derives length from the next attribute byte.
+        // FFW info, the explicit field length, and a fromSf marker are all
+        // recorded with the attribute mark so RebuildFields can build a
+        // FieldDefinition without scanning. Length matters for fields where
+        // NULLs (not attribute bytes) pad to the next SF — Sign On's User
+        // and Password are 10 cells each but separated by 10 NULL bytes, so
+        // the scan would otherwise compute the field as nearly a row long.
         if (i + 5 > data.Length) return data.Length;
         var ffw1 = data[i];
         var ffw2 = data[i + 1];
         var attrByte = data[i + 2];
+        var length = (data[i + 3] << 8) | data[i + 4];
 
-        _screen.WriteAttribute(attrByte, ffw1, ffw2);
+        _screen.WriteAttribute(attrByte, ffw1, ffw2, fromSf: true, length: length);
 
         return i + 5;
     }

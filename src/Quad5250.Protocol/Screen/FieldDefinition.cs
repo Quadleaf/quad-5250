@@ -13,8 +13,14 @@ public sealed record FieldDefinition(
     byte Ffw1,
     byte Ffw2)
 {
-    /// <summary>Bit 2 of the attribute byte distinguishes input from protected.</summary>
-    public bool IsInput => (Attribute & 0x04) != 0;
+    /// <summary>
+    /// Always true: a <see cref="FieldDefinition"/> is only created from a
+    /// Start-of-Field order, which by definition declares an input field.
+    /// (The attribute byte's bit 2 is informational about color-style only —
+    /// SF orders that draw input fields with attr 0x20 like the Main Menu
+    /// command line are still input fields.)
+    /// </summary>
+    public bool IsInput => true;
 
     /// <summary>Lowest 3 bits == 7 means non-display (password fields).</summary>
     public bool IsNonDisplay => (Attribute & 0x07) == 0x07;

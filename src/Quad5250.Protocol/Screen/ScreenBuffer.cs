@@ -44,7 +44,7 @@ public sealed class ScreenBuffer
         Clear();
     }
 
-    private readonly record struct AttrMark(int Row, int Col, byte Attr, byte Ffw1, byte Ffw2);
+    private readonly record struct AttrMark(int Row, int Col, byte Attr, byte Ffw1, byte Ffw2, bool FromSf, int Length);
 
     public ScreenCell this[int row, int col]
     {
@@ -69,10 +69,20 @@ public sealed class ScreenBuffer
     /// displays as space and the position is recorded for later
     /// <see cref="RebuildFields"/> scans.
     /// </summary>
-    public void WriteAttribute(byte attr, byte ffw1 = 0, byte ffw2 = 0)
+    public void WriteAttribute(byte attr, byte ffw1 = 0, byte ffw2 = 0, bool fromSf = false, int length = 0)
     {
         var key = BufferRow * Cols + BufferCol;
-        _attrMarks[key] = new AttrMark(BufferRow, BufferCol, attr, ffw1, ffw2);
+        // The host sometimes re-emits an inline attribute byte at a position
+        // that already holds an SF mark (e.g. Sign On's Password field, where
+        // an inline 0x27 + RA repaints the input area after the SF defines
+        // it). The visual cell update still happens, but we must not let the
+        // inline mark overwrite the SF's field semantics — length and FFW
+        // would be lost and the field would disappear from the field list.
+        var keepExistingSf = !fromSf
+            && _attrMarks.TryGetValue(key, out var existing)
+            && existing.FromSf;
+        if (!keepExistingSf)
+            _attrMarks[key] = new AttrMark(BufferRow, BufferCol, attr, ffw1, ffw2, fromSf, length);
         Write(' ', attr);
         CurrentAttribute = attr;
     }
@@ -104,14 +114,22 @@ public sealed class ScreenBuffer
         for (int k = 0; k < sorted.Count; k++)
         {
             var m = sorted[k];
-            if ((m.Attr & 0x04) == 0) continue;            // protected
+            // In 5250 enhanced mode (which we declared in Query Reply), input
+            // fields are defined exclusively by Start-of-Field orders.
+            // Inline attribute bytes with bit 2 set look like input markers
+            // by attribute-byte convention but in practice carry visual-only
+            // hints (e.g. system status markers around the date row of
+            // WRKUSRJOB) — treating them as input fields produces stray
+            // underscores the IBM emulator doesn't show.
+            if (!m.FromSf || m.Length <= 0) continue;
 
             var startIdx = m.Row * Cols + m.Col + 1;
-            var endIdx = k + 1 < sorted.Count
-                ? sorted[k + 1].Row * Cols + sorted[k + 1].Col
-                : Rows * Cols;
-            var length = endIdx - startIdx;
-            if (length <= 0) continue;
+            // SF orders carry an explicit length. Use it directly — relying
+            // on the scan-distance to the next attribute mark fails when the
+            // host pads with NULLs between fields (e.g. User -> Password on
+            // the Sign On screen has 10 NULLs separating the SFs, not an
+            // intervening attribute byte).
+            var length = m.Length;
 
             _fields.Add(new FieldDefinition(
                 startIdx / Cols, startIdx % Cols, length, m.Attr, m.Ffw1, m.Ffw2));
