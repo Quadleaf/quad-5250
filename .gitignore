@@ -1,0 +1,54 @@
+# --- .NET ---
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.swp
+.vs/
+.vscode/
+*.pdb
+*.dll.config
+*.exe.config
+project.lock.json
+project.fragment.lock.json
+artifacts/
+*.tlog
+*.binlog
+.idea/
+.idearules/
+*.iml
+
+# --- React / Node ---
+node_modules/
+dist/
+build/
+.vite/
+.cache/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnp.*
+.yarn/cache
+.yarn/unplugged
+.yarn/install-state.gz
+
+# --- Env files (may contain secrets) ---
+.env
+.env.local
+.env.*.local
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swo
+
+# --- Project local ---
+logs/

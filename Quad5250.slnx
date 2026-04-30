@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Quad5250.Protocol/Quad5250.Protocol.csproj" />
+    <Project Path="src/Quad5250.Server/Quad5250.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Quad5250.Protocol.Tests/Quad5250.Protocol.Tests.csproj" />
+  </Folder>
+</Solution>
