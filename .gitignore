@@ -50,5 +50,12 @@ pnpm-debug.log*
 Thumbs.db
 *.swo
 
+# --- Terraform ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
+
 # --- Project local ---
 logs/

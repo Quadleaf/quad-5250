@@ -1,0 +1,27 @@
+# Azure Developer CLI manifest. `azd up` will:
+#   1. provision the Bicep in infra/
+#   2. build src/Quad5250.Server and src/web Dockerfiles
+#   3. push images to the ACR created in step 1
+#   4. roll the matching Container Apps (matched by `azd-service-name` tag)
+name: quad5250
+metadata:
+  template: quad5250@1.0.0
+infra:
+  provider: terraform
+  path: infra
+services:
+  api:
+    project: ./src/Quad5250.Server
+    language: csharp
+    host: containerapp
+    docker:
+      path: Dockerfile
+      # Repo root — needed because Quad5250.Server depends on Quad5250.Protocol.
+      context: ../..
+  web:
+    project: ./src/web
+    language: ts
+    host: containerapp
+    docker:
+      path: Dockerfile
+      context: .

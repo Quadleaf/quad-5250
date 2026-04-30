@@ -1,0 +1,38 @@
+# Processed by nginx:1.27-alpine's docker-entrypoint envsubst step on startup.
+# ${API_HOST} is the API's Container Apps internal FQDN, set by Bicep.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SignalR negotiation + WebSocket upgrade. Long timeouts keep idle 5250
+    # sessions alive across menu wait periods.
+    location /hubs/ {
+        proxy_pass http://${API_HOST};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        # ACA's env edge routes by Host header. Forwarding the inbound web
+        # FQDN here makes the platform 404 (it routes to the web app, which
+        # has no /hubs route). Send the API's FQDN so it routes to the API.
+        proxy_set_header Host ${API_HOST};
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 24h;
+        proxy_send_timeout 24h;
+    }
+
+    # SPA fallback — let React Router handle unknown paths.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
