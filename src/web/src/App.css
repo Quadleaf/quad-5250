@@ -41,6 +41,23 @@ body {
   font: inherit;
 }
 
+.toolbar .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #ccc;
+  user-select: none;
+}
+
+.toolbar .checkbox input {
+  margin: 0;
+  padding: 0;
+  width: auto;
+  border: none;
+  background: transparent;
+}
+
 .status {
   font-size: 0.85rem;
   color: #888;

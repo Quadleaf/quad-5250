@@ -151,6 +151,22 @@ export function useTerminal() {
     }));
   }, [screen.rows, screen.cols]);
 
+  /**
+   * Programmatically fill an input field with text — used for credential
+   * auto-fill. Each character lands in a cell of the field starting at its
+   * leftmost column; extra characters past the field length are dropped.
+   */
+  const populateField = useCallback((field: WireField, text: string) => {
+    setTyped(prev => {
+      const next = new Map(prev);
+      const max = Math.min(text.length, field.length);
+      for (let i = 0; i < max; i++) {
+        next.set(field.row * screen.cols + field.col + i, text[i]);
+      }
+      return next;
+    });
+  }, [screen.cols]);
+
   const sendAid = useCallback(async (aidKey: string) => {
     const conn = connRef.current;
     if (!conn || conn.state !== HubConnectionState.Connected) return;
@@ -216,5 +232,6 @@ export function useTerminal() {
     tabBack,
     moveCursor,
     sendAid,
+    populateField,
   };
 }
