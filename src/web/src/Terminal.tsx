@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { attrStyle } from "./attrColor";
 import type { ScreenUpdate } from "./types";
 
 interface CellFlags { input: boolean; nonDisplay: boolean; }
@@ -69,14 +70,22 @@ export function Terminal({
       // Mask non-display cells that the user typed into.
       if (typedCh !== undefined && flags?.nonDisplay) ch = "•";
 
+      const style = attrStyle(cell?.attr ?? 0x20);
       const className = [
         "cell",
         isCursor && "cursor",
         flags?.input && "field",
         flags?.nonDisplay && "non-display",
+        style.underline && "underline",
+        style.blink && "blink",
       ].filter(Boolean).join(" ");
+      const inlineStyle: React.CSSProperties = isCursor
+        ? {}
+        : style.hidden
+          ? { color: style.bg }
+          : { color: style.fg, background: style.bg === "#000" ? undefined : style.bg };
       cells.push(
-        <span key={c} className={className}>
+        <span key={c} className={className} style={inlineStyle}>
           {ch === " " ? " " : ch}
         </span>,
       );

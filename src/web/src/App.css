@@ -69,7 +69,10 @@ body {
   color: var(--term-fg);
   font-family: "JetBrains Mono", "Menlo", "Consolas", monospace;
   font-size: 16px;
-  line-height: 1.15;
+  /* Tight line-height so adjacent rows of background-colored cells (e.g.
+     reverse-video block graphics in the IBM Sign On logo) form a connected
+     rectangle with no horizontal gap between rows. */
+  line-height: 1;
   padding: 0.5rem;
   border: 1px solid #333;
   outline: none;
@@ -101,4 +104,16 @@ body {
 
 .cell.non-display {
   color: rgba(43, 239, 43, 0.25);
+}
+
+.cell.underline {
+  text-decoration: underline;
+}
+
+.cell.blink {
+  animation: cell-blink 1s steps(2, start) infinite;
+}
+
+@keyframes cell-blink {
+  to { visibility: hidden; }
 }

@@ -20,6 +20,13 @@ public sealed class ScreenBuffer
     public int BufferRow { get; private set; }
     public int BufferCol { get; private set; }
 
+    /// <summary>
+    /// Most-recent attribute byte the host sent. 5250 attribute bytes are
+    /// "sticky" — every character after one inherits its color/intensity until
+    /// the next attribute byte. Reset to 0x20 (green-on-black) on Clear.
+    /// </summary>
+    public byte CurrentAttribute { get; private set; } = 0x20;
+
     private readonly ScreenCell[] _cells;
     private readonly List<FieldDefinition> _fields = new();
     // Position (row*Cols+col) → attribute mark for every attribute byte the
@@ -52,6 +59,7 @@ public sealed class ScreenBuffer
         CursorCol = 0;
         BufferRow = 0;
         BufferCol = 0;
+        CurrentAttribute = 0x20;
         _fields.Clear();
         _attrMarks.Clear();
     }
@@ -66,6 +74,15 @@ public sealed class ScreenBuffer
         var key = BufferRow * Cols + BufferCol;
         _attrMarks[key] = new AttrMark(BufferRow, BufferCol, attr, ffw1, ffw2);
         Write(' ', attr);
+        CurrentAttribute = attr;
+    }
+
+    /// <summary>Write a character at the current buffer position using the
+    /// current sticky attribute.</summary>
+    public void Write(char ch)
+    {
+        _cells[BufferRow * Cols + BufferCol] = new ScreenCell(ch, CurrentAttribute);
+        AdvanceBuffer();
     }
 
     /// <summary>

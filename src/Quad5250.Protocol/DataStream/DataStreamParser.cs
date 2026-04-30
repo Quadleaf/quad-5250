@@ -139,7 +139,9 @@ public sealed class DataStreamParser
             }
             else
             {
-                _screen.Write(_ebcdic.ToUnicode(b), 0x20);
+                // Inherits the current sticky attribute set by the most recent
+                // 0x20-0x3F byte on this WTD pass.
+                _screen.Write(_ebcdic.ToUnicode(b));
                 i++;
             }
         }
@@ -190,7 +192,10 @@ public sealed class DataStreamParser
     private int ApplyRa(ReadOnlySpan<byte> data, int i)
     {
         // Repeat To Address: end-row, end-col, char (EBCDIC). Fill from current
-        // buffer position up to and including the end address with the char.
+        // buffer position up to and including the end address with the char,
+        // inheriting the current sticky attribute. The IBM Sign On "logo" is
+        // drawn this way — RA fills rectangular regions of spaces under
+        // reverse-video attributes (0x21 = green block, 0x3B = blue block).
         if (i + 3 > data.Length) return data.Length;
         var endRow = data[i] - 1;
         var endCol = data[i + 1] - 1;
@@ -201,14 +206,15 @@ public sealed class DataStreamParser
         var total = _screen.Rows * _screen.Cols;
         // Wrap if end is before start.
         var count = endIndex >= curIndex ? endIndex - curIndex + 1 : total - curIndex + endIndex + 1;
-        for (int k = 0; k < count; k++) _screen.Write(ch, 0x20);
+        for (int k = 0; k < count; k++) _screen.Write(ch);
 
         return i + 3;
     }
 
     private int ApplyEa(ReadOnlySpan<byte> data, int i)
     {
-        // Erase To Address: end-row, end-col, type (length byte). Fill with spaces.
+        // Erase To Address: end-row, end-col, type (length byte). Fill with
+        // nulls (rendered as space) under the current sticky attribute.
         if (i + 3 > data.Length) return data.Length;
         var endRow = data[i] - 1;
         var endCol = data[i + 1] - 1;
@@ -217,7 +223,7 @@ public sealed class DataStreamParser
         var curIndex = _screen.BufferRow * _screen.Cols + _screen.BufferCol;
         var total = _screen.Rows * _screen.Cols;
         var count = endIndex >= curIndex ? endIndex - curIndex + 1 : total - curIndex + endIndex + 1;
-        for (int k = 0; k < count; k++) _screen.Write(' ', 0x20);
+        for (int k = 0; k < count; k++) _screen.Write(' ');
 
         return i + 3;
     }
