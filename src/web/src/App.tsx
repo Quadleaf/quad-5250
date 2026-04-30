@@ -2,7 +2,15 @@ import { useState } from "react";
 import { HubConnectionState } from "@microsoft/signalr";
 import { Terminal } from "./Terminal";
 import { useTerminal } from "./useTerminal";
+import { THEMES, type ThemeName } from "./attrColor";
 import "./App.css";
+
+const THEME_STORAGE_KEY = "quad5250.theme";
+
+function loadTheme(): ThemeName {
+  const v = localStorage.getItem(THEME_STORAGE_KEY);
+  return v === "light" || v === "dark" || v === "green" ? v : "green";
+}
 
 function App() {
   const {
@@ -11,11 +19,18 @@ function App() {
   } = useTerminal();
   const [host, setHost] = useState("");
   const [port, setPort] = useState(23);
+  const [themeName, setThemeName] = useState<ThemeName>(loadTheme);
 
   const onConnect = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!host) return;
     await connect({ host, port });
+  };
+
+  const onThemeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value as ThemeName;
+    setThemeName(v);
+    localStorage.setItem(THEME_STORAGE_KEY, v);
   };
 
   return (
@@ -37,6 +52,11 @@ function App() {
             Connect
           </button>
         </form>
+        <select value={themeName} onChange={onThemeChange} aria-label="Theme">
+          <option value="green">Green</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
         <span className="status">hub: {state}</span>
       </header>
 
@@ -47,6 +67,7 @@ function App() {
         cursor={cursor}
         typed={typed}
         cellFlags={cellFlags}
+        theme={THEMES[themeName]}
         onChar={typeChar}
         onBackspace={backspace}
         onTabFwd={tabFwd}
