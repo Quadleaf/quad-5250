@@ -90,6 +90,14 @@ body {
   text-decoration: underline;
 }
 
+.cell.fkey {
+  cursor: pointer;
+}
+
+.cell.fkey:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
 .cell.blink {
   animation: cell-blink 1s steps(2, start) infinite;
 }

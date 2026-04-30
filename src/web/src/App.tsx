@@ -6,10 +6,17 @@ import { THEMES, type ThemeName } from "./attrColor";
 import "./App.css";
 
 const THEME_STORAGE_KEY = "quad5250.theme";
+const HOST_STORAGE_KEY = "quad5250.host";
+const PORT_STORAGE_KEY = "quad5250.port";
 
 function loadTheme(): ThemeName {
   const v = localStorage.getItem(THEME_STORAGE_KEY);
   return v === "light" || v === "dark" || v === "green" ? v : "green";
+}
+
+function loadPort(): number {
+  const v = Number(localStorage.getItem(PORT_STORAGE_KEY));
+  return Number.isFinite(v) && v > 0 ? v : 23;
 }
 
 function App() {
@@ -17,13 +24,15 @@ function App() {
     screen, state, error, cursor, typed, cellFlags,
     connect, typeChar, backspace, tabFwd, tabBack, moveCursor, sendAid,
   } = useTerminal();
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState(23);
+  const [host, setHost] = useState(() => localStorage.getItem(HOST_STORAGE_KEY) ?? "");
+  const [port, setPort] = useState<number>(loadPort);
   const [themeName, setThemeName] = useState<ThemeName>(loadTheme);
 
   const onConnect = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!host) return;
+    localStorage.setItem(HOST_STORAGE_KEY, host);
+    localStorage.setItem(PORT_STORAGE_KEY, String(port));
     await connect({ host, port });
   };
 

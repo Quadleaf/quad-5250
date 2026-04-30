@@ -57,6 +57,29 @@ export function Terminal({
     [onChar, onBackspace, onTabFwd, onTabBack, onMove, onAid],
   );
 
+  // Detect "F<n>" function-key references in the bottom 5 rows and turn each
+  // one into a clickable region. The clickable region runs from the F to the
+  // next double space (or end of row) so "F3=Exit" is one button, while
+  // "F13=Information Assistant" stays a single clickable label even though
+  // it has a single space inside it.
+  const fkeyByCell = new Map<number, string>();
+  for (let r = Math.max(0, screen.rows - 5); r < screen.rows; r++) {
+    let rowText = "";
+    for (let c = 0; c < screen.cols; c++) {
+      const idx = r * screen.cols + c;
+      rowText += typed.get(idx) ?? screen.cells[idx]?.ch ?? " ";
+    }
+    const re = /F(\d{1,2})\b/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(rowText)) !== null) {
+      const n = parseInt(m[1], 10);
+      if (n < 1 || n > 24) continue;
+      let end = m.index + m[0].length;
+      while (end < rowText.length && !(rowText[end] === " " && rowText[end + 1] === " ")) end++;
+      for (let c = m.index; c < end; c++) fkeyByCell.set(r * screen.cols + c, `F${n}`);
+    }
+  }
+
   const rows: React.ReactNode[] = [];
   for (let r = 0; r < screen.rows; r++) {
     const cells: React.ReactNode[] = [];
@@ -66,6 +89,7 @@ export function Terminal({
       const flags = cellFlags.get(idx);
       const isCursor = r === cursor.row && c === cursor.col;
       const typedCh = typed.get(idx);
+      const fkeyAid = fkeyByCell.get(idx);
 
       const isTypedBullet = typedCh !== undefined && flags?.nonDisplay;
       let ch = typedCh ?? cell?.ch ?? " ";
@@ -81,6 +105,7 @@ export function Terminal({
         // don't render with two stacked underlines under typed text.
         style.underline && !flags?.input && "underline",
         style.blink && "blink",
+        fkeyAid && "fkey",
       ].filter(Boolean).join(" ");
       const inlineStyle: React.CSSProperties = isCursor
         ? { background: theme.cursor, color: theme.bg }
@@ -102,8 +127,23 @@ export function Terminal({
             // Only paint background when it differs from the terminal bg, so
             // adjacent default cells don't get overlapping backgrounds.
             : { color: style.fg, background: style.bg === theme.bg ? undefined : style.bg };
+      const onCellMouseDown = fkeyAid
+        ? (e: React.MouseEvent) => {
+            // Keep keyboard focus on the terminal so the next keystroke still
+            // lands here, then fire the AID just like a real F-key press.
+            e.preventDefault();
+            ref.current?.focus();
+            onAid(fkeyAid);
+          }
+        : undefined;
       cells.push(
-        <span key={c} className={className} style={inlineStyle}>
+        <span
+          key={c}
+          className={className}
+          style={inlineStyle}
+          onMouseDown={onCellMouseDown}
+          title={fkeyAid}
+        >
           {isTypedBullet
             ? <span style={{ opacity: 0.7 }}>•</span>
             : ch === " " ? " " : ch}
