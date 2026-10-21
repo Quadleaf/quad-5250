@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Quad5250.Protocol.DataStream;
 using Quad5250.Protocol.Ebcdic;
+using Quad5250.Protocol.Input;
 using Quad5250.Protocol.Screen;
 using Quad5250.Protocol.Telnet;
 
@@ -11,12 +12,21 @@ namespace Quad5250.Protocol.Session;
 /// Orchestrates a single 5250 session: owns the telnet client, the datastream
 /// parser, the EBCDIC translator, and the screen buffer. Raises ScreenChanged
 /// after applying each host record so the SignalR hub can push an update.
+/// In-process clients (desktop, headless) edit fields through <see cref="Edit"/>
+/// and press AID keys with <see cref="SendAidAsync"/>; the browser path keeps its
+/// own typed buffer and calls <see cref="SendKeyAsync"/>.
 /// </summary>
 public sealed class Tn5250Session : IAsyncDisposable
 {
     private readonly Tn5250Client _client;
     private readonly DataStreamParser _parser;
     private readonly ILogger<Tn5250Session> _log;
+
+    private readonly FieldEditor _editor;
+    // Guards the screen buffer: the read loop applies host records while the
+    // UI thread edits fields and takes snapshots.
+    private readonly object _sync = new();
+    private bool _keyboardLocked;
 
     private CancellationTokenSource? _cts;
     private Task? _runTask;
@@ -25,6 +35,13 @@ public sealed class Tn5250Session : IAsyncDisposable
     public ScreenBuffer Screen { get; }
     public EbcdicTranslator Ebcdic { get; }
     public bool IsConnected => !_disconnected;
+
+    /// <summary>
+    /// True from an AID key until the host's next record. A real 5250 waits
+    /// for the WTD control character's keyboard-unlock bit; we unlock on any
+    /// record, which is what the browser client has always done.
+    /// </summary>
+    public bool IsKeyboardLocked { get { lock (_sync) return _keyboardLocked; } }
 
     public event Action? ScreenChanged;
     public event Action? Disconnected;
@@ -37,6 +54,7 @@ public sealed class Tn5250Session : IAsyncDisposable
         Ebcdic = new EbcdicTranslator(ccsid);
         Screen = new ScreenBuffer();
         _parser = new DataStreamParser(Screen, Ebcdic);
+        _editor = new FieldEditor(Screen);
     }
 
     public async Task StartAsync(CancellationToken ct = default)
@@ -55,7 +73,12 @@ public sealed class Tn5250Session : IAsyncDisposable
             await foreach (var record in _client.ReadRecordsAsync(ct))
             {
                 _log.LogInformation("Applying record ({Length} bytes)", record.Length);
-                _parser.Apply(record.Span);
+                lock (_sync)
+                {
+                    _parser.Apply(record.Span);
+                    _editor.OnHostWrite();
+                    _keyboardLocked = false;
+                }
                 ScreenChanged?.Invoke();
 
                 // Parser may have queued protocol-level responses (e.g. Query
@@ -88,10 +111,10 @@ public sealed class Tn5250Session : IAsyncDisposable
     }
 
     /// <summary>
-    /// Send a Read MDT Fields response: GDS header + cursor row/col (1-indexed)
-    /// + AID byte, followed by SBA + EBCDIC text for each modified field the
-    /// caller passes in. The cursor position is the user's reported position
-    /// (where they had focus when they pressed the AID key).
+    /// Send a Read MDT Fields response with modified fields the caller
+    /// tracked itself (the browser keeps its own typed-character buffer).
+    /// In-process clients should use <see cref="SendAidAsync"/>, which reads
+    /// the modified fields from the screen buffer.
     /// </summary>
     public Task SendKeyAsync(
         Aid aid,
@@ -103,49 +126,68 @@ public sealed class Tn5250Session : IAsyncDisposable
         if (_disconnected)
             throw new InvalidOperationException("Host has closed the connection. Reconnect to continue.");
 
-        modifiedFields ??= Array.Empty<ModifiedField>();
+        var record = AidResponse.Build(Ebcdic, aid, modifiedFields ?? Array.Empty<ModifiedField>(), cursorRow, cursorCol);
+        return _client.SendRecordAsync(record, ct);
+    }
 
-        // 10-byte GDS header + 3-byte payload (cursor + AID) + per modified field (3 SBA + text)
-        var capacity = 13;
-        foreach (var f in modifiedFields) capacity += 3 + f.Text.Length;
-        var buf = new byte[capacity];
-
-        int p = 0;
-        // GDS header per RFC 1205 / tn5250j writeGDS: 10 bytes total.
-        // LL LL 12 A0 00 00 04 00 00 03 — that 0x04 is the "variable header
-        // length" and the host requires it; 0x03 is the response opcode used
-        // for AID (Put/Get) records.
-        p += 2;            // length placeholder
-        buf[p++] = 0x12; buf[p++] = 0xA0;
-        buf[p++] = 0x00; buf[p++] = 0x00;   // reserved (16 bits)
-        buf[p++] = 0x04;                    // variable header length
-        buf[p++] = 0x00;                    // flags
-        buf[p++] = 0x00;                    // reserved
-        buf[p++] = 0x03;                    // opcode: Put/Get (AID response)
-
-        // Read response payload: cursor row/col (1-indexed), AID byte
-        buf[p++] = (byte)(cursorRow + 1);
-        buf[p++] = (byte)(cursorCol + 1);
-        buf[p++] = (byte)aid;
-
-        // Modified fields: each is SBA + EBCDIC text
-        Span<byte> ebcdic = stackalloc byte[80];
-        foreach (var f in modifiedFields)
+    /// <summary>
+    /// Press an AID key: send the fields edited through <see cref="Edit"/>
+    /// plus the cursor position, and lock the keyboard until the host's next
+    /// record. Returns false without sending when the keyboard is already
+    /// locked (a previous AID is still outstanding).
+    /// </summary>
+    public async Task<bool> SendAidAsync(Aid aid, CancellationToken ct = default)
+    {
+        byte[] record;
+        lock (_sync)
         {
-            buf[p++] = DataStream.Order.SetBufferAddress;
-            buf[p++] = (byte)(f.Row + 1);
-            buf[p++] = (byte)(f.Col + 1);
+            if (_disconnected)
+                throw new InvalidOperationException("Host has closed the connection. Reconnect to continue.");
+            if (_keyboardLocked) return false;
 
-            var len = Math.Min(f.Text.Length, ebcdic.Length);
-            var written = Ebcdic.ToEbcdic(f.Text.AsSpan(0, len), ebcdic[..len]);
-            for (int k = 0; k < written; k++) buf[p++] = ebcdic[k];
+            record = AidResponse.Build(Ebcdic, aid, _editor.GetModifiedFields(), Screen.CursorRow, Screen.CursorCol);
+            _keyboardLocked = true;
         }
 
-        // Fill total length (big-endian) into header
-        buf[0] = (byte)(p >> 8);
-        buf[1] = (byte)p;
+        try
+        {
+            await _client.SendRecordAsync(record, ct);
+            return true;
+        }
+        catch
+        {
+            lock (_sync) _keyboardLocked = false;
+            throw;
+        }
+    }
 
-        return _client.SendRecordAsync(buf.AsMemory(0, p), ct);
+    /// <summary>
+    /// Run an operator edit against the screen buffer, serialized with host
+    /// writes. Returns <see cref="EditResult.Inhibited"/> without running it
+    /// while the keyboard is locked or the host has disconnected.
+    /// </summary>
+    public EditResult Edit(Func<FieldEditor, EditResult> edit)
+    {
+        lock (_sync)
+        {
+            if (_keyboardLocked || _disconnected) return EditResult.Inhibited;
+            return edit(_editor);
+        }
+    }
+
+    /// <summary>Cursor-only edits (tab, arrows) that always succeed when the keyboard is free.</summary>
+    public EditResult Edit(Action<FieldEditor> edit)
+        => Edit(e => { edit(e); return EditResult.Ok; });
+
+    /// <summary>Read the screen under the session lock, e.g. a field's current content.</summary>
+    public T Read<T>(Func<FieldEditor, ScreenBuffer, T> read)
+    {
+        lock (_sync) return read(_editor, Screen);
+    }
+
+    public ScreenSnapshot GetSnapshot()
+    {
+        lock (_sync) return Screen.TakeSnapshot(_keyboardLocked);
     }
 
     public Task SendTextAsync(string text, CancellationToken ct = default)

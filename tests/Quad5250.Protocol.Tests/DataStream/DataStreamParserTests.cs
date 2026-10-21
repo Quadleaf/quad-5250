@@ -94,6 +94,19 @@ public class DataStreamParserTests
     }
 
     [Fact]
+    public void Wtd_RepeatToAddress_NullFill_WritesSpaces()
+    {
+        var (p, s) = NewParser();
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x01, 0x01,
+            Order.RepeatToAddress, 0x01, 0x05, 0x00));
+
+        for (int c = 0; c < 5; c++)
+            Assert.Equal(' ', s[0, c].Char);
+    }
+
+    [Fact]
     public void MultipleCommands_InOneRecord_Apply_InOrder()
     {
         var (p, s) = NewParser();
@@ -121,6 +134,119 @@ public class DataStreamParserTests
     }
 
     [Fact]
+    public void StartOfField_WithFfw_DefinesInputField()
+    {
+        var (p, s) = NewParser();
+        // SBA(6,20), SF FFW=0x60 0x20 (bypass, monocase), attr 0x24, len 10
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x06, 0x14,
+            Order.StartOfField, 0x60, 0x20, 0x24, 0x00, 0x0A));
+
+        var f = Assert.Single(s.Fields);
+        Assert.Equal((5, 20, 10), (f.Row, f.Col, f.Length));
+        Assert.True(f.IsInput);
+        Assert.True(f.IsBypass);
+        Assert.True(f.IsMonocase);
+        Assert.False(f.IsNumeric);
+    }
+
+    [Fact]
+    public void AttributeRewrittenAfterField_RestylesFieldCells()
+    {
+        // Main Menu command line as IBM i sends it: SF with attr 0x20 first,
+        // other screen content, then the same position rewritten inline as
+        // 0x24 (underscore) after the "===>" prompt, then a 0x20 to end it.
+        var (p, s) = NewParser();
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x14, 0x06,
+            Order.StartOfField, 0x50, 0x00, 0x20, 0x00, 0x05,
+            Order.SetBufferAddress, 0x01, 0x01, 0xC1,
+            Order.SetBufferAddress, 0x14, 0x01, 0x20, 0x7E, 0x7E, 0x7E, 0x6E, 0x24,
+            Order.SetBufferAddress, 0x14, 0x0C, 0x20));
+
+        for (int c = 6; c <= 10; c++)
+            Assert.Equal((byte)0x24, s[19, c].Attribute);
+        Assert.Equal((byte)0x20, s[19, 12].Attribute);
+        Assert.Equal('=', s[19, 1].Char);
+        var f = Assert.Single(s.Fields);
+        Assert.Equal((byte)0x24, f.Attribute);
+        Assert.Equal(5, f.Length);
+    }
+
+    [Fact]
+    public void Cells_TakeAttributeOfNearestPrecedingAttributeByte()
+    {
+        var (p, s) = NewParser();
+        // Text first, then an attribute byte placed before it in a later record.
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x02, 0x05, 0xC1, 0xC2));
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x02, 0x04, 0x28));
+
+        Assert.Equal((byte)0x28, s[1, 4].Attribute);
+        Assert.Equal((byte)0x28, s[1, 5].Attribute);
+        Assert.Equal((byte)0x20, s[0, 0].Attribute);
+    }
+
+    [Fact]
+    public void SfFieldAttribute_StopsAtFieldLength()
+    {
+        // Sign On style: "AB" under 0x20, SF attr 0x24 len 3, then NULL padding
+        // with no ending attribute byte, then more text.
+        var (p, s) = NewParser();
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x06, 0x01, 0x20, 0xC1, 0xC2,
+            Order.StartOfField, 0x40, 0x00, 0x24, 0x00, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xC3));
+
+        Assert.Equal((byte)0x24, s[5, 4].Attribute);
+        Assert.Equal((byte)0x24, s[5, 6].Attribute);
+        Assert.Equal((byte)0x20, s[5, 7].Attribute);
+        Assert.Equal((byte)0x20, s[5, 9].Attribute);
+        Assert.Equal('C', s[5, 9].Char);
+        Assert.Equal((byte)0x20, s[10, 0].Attribute);
+    }
+
+    [Fact]
+    public void StartOfField_WithoutFfw_DefinesOutputOnlyField()
+    {
+        var (p, s) = NewParser();
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x06, 0x14,
+            Order.StartOfField, 0x22, 0x00, 0x05,
+            0xC1));
+
+        var f = Assert.Single(s.Fields);
+        Assert.False(f.IsInput);
+        Assert.Equal((byte)0x22, f.Attribute);
+        Assert.Equal(5, f.Length);
+        Assert.Equal('A', s[5, 20].Char);
+    }
+
+    [Fact]
+    public void StartOfField_SkipsFieldControlWords()
+    {
+        var (p, s) = NewParser();
+        // FFW 0x45 0x00 (digits only), FCW 0x88 0x00, attr 0x24, len 3
+        p.Apply(Record(
+            Cmd.WriteToDisplay, 0x00, 0x00,
+            Order.SetBufferAddress, 0x06, 0x14,
+            Order.StartOfField, 0x45, 0x00, 0x88, 0x00, 0x24, 0x00, 0x03));
+
+        var f = Assert.Single(s.Fields);
+        Assert.Equal((byte)0x24, f.Attribute);
+        Assert.Equal(3, f.Length);
+        Assert.Equal(FieldShift.DigitsOnly, f.Shift);
+        Assert.True(f.IsNumeric);
+    }
+
+    [Fact]
     public void AttributeByte_OccupiesOneCell_AsSpace()
     {
         var (p, s) = NewParser();
@@ -133,6 +259,8 @@ public class DataStreamParserTests
 
         Assert.Equal(' ', s[0, 0].Char);
         Assert.Equal((byte)0x20, s[0, 0].Attribute);
+        Assert.True(s[0, 0].IsAttributeByte);
         Assert.Equal('A', s[0, 1].Char);
+        Assert.False(s[0, 1].IsAttributeByte);
     }
 }
