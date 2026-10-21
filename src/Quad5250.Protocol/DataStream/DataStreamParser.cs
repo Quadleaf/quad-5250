@@ -80,8 +80,10 @@ public sealed class DataStreamParser
                     i++;
                     break;
                 case Cmd.WriteToDisplay:
-                case Cmd.WriteErrorCode:
                     i = ApplyWriteToDisplay(data, i + 1);
+                    break;
+                case Cmd.WriteErrorCode:
+                    i = ApplyWriteErrorCode(data, i + 1);
                     break;
                 case Cmd.WriteStructuredField:
                     i = ApplyWriteStructuredField(data, i + 1);
@@ -162,8 +164,23 @@ public sealed class DataStreamParser
             _keyboard = KeyboardEffect.Lock;
         }
         if ((data[i + 1] & 0x08) != 0) _keyboard = KeyboardEffect.Unlock;
-        i += 2;
+        return ApplyWriteData(data, i + 2);
+    }
 
+    /// <summary>
+    /// Write Error Code carries no control characters: its orders and text
+    /// go straight to the message line (the last row) unless an order moves
+    /// them, and it leaves the keyboard state alone.
+    /// </summary>
+    private int ApplyWriteErrorCode(ReadOnlySpan<byte> data, int i)
+    {
+        _screen.SetBufferAddress(_screen.Rows - 1, 0);
+        return ApplyWriteData(data, i);
+    }
+
+    /// <summary>Orders, attribute bytes and text of a write, up to the next command.</summary>
+    private int ApplyWriteData(ReadOnlySpan<byte> data, int i)
+    {
         while (i < data.Length)
         {
             var b = data[i];

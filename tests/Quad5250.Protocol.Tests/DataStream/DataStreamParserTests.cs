@@ -241,6 +241,21 @@ public class DataStreamParserTests
     }
 
     [Fact]
+    public void WriteErrorCode_WritesMessageLine_WithoutControlBytes()
+    {
+        var (p, s) = NewParser();
+        s[23, 0] = new ScreenCell('X', 0x20);
+
+        // A red attribute (0x28) first: as a CC1 it would read as "lock keyboard".
+        var result = p.Apply(Record(0x04, Cmd.WriteErrorCode, 0x28, 0xC5, 0xD9, 0xD9));
+
+        Assert.True(s[23, 0].IsAttributeByte);
+        Assert.Equal((byte)0x28, s[23, 0].Attribute);
+        Assert.Equal("ERR", new string([s[23, 1].Char, s[23, 2].Char, s[23, 3].Char]));
+        Assert.Equal(KeyboardEffect.None, result.Keyboard);
+    }
+
+    [Fact]
     public void ReadCommandByte_WithoutClassPrefix_IsIgnored()
     {
         var (p, _) = NewParser();
