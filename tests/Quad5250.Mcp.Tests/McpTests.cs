@@ -81,6 +81,26 @@ public class ScreenDescriptionTests
     }
 
     [Fact]
+    public void Label_InsideHostDrawnWindow_DropsTheBorder()
+    {
+        // Layout of the payment batch filter window as the host draws it.
+        var s = new ScreenBuffer();
+        s.SetBufferAddress(10, 14);
+        foreach (var c in ":  Select Confirmed/Unconfirmed/All.  ") s.Write(c, 0x20);
+        s.SetBufferAddress(10, 51);
+        s.WriteAttribute(0x24, 0x40, 0x20, fromSf: true, length: 1);
+        s.SetBufferAddress(12, 14);
+        foreach (var c in ":  Select Date Range From/To........  ") s.Write(c, 0x20);
+        s.SetBufferAddress(12, 51);
+        s.WriteAttribute(0x24, 0x43, 0x00, fromSf: true, length: 10);
+        s.RebuildFields();
+
+        var labels = ScreenDescription.Fields(s.TakeSnapshot()).Select(f => f.Label);
+
+        Assert.Equal(["Select Confirmed/Unconfirmed/All", "Select Date Range From/To"], labels);
+    }
+
+    [Fact]
     public void Describe_NeverShowsHiddenFieldContent()
     {
         var text = ScreenDescription.Describe(SignOnLike());
