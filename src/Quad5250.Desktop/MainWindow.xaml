@@ -33,6 +33,8 @@
                     <Button Content="Forget" Click="OnForget" ToolTip="Remove saved credentials for this host" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <Button x:Name="UpdateButton" Visibility="Collapsed" Click="OnApplyUpdate"
+                            Background="#2e7d32" Foreground="White" BorderBrush="#2e7d32" />
                     <Button Content="Copy screenshot" Click="OnCopyScreenshot" ToolTip="Copy the screen as an image (Ctrl+Shift+C)" />
                     <Button Content="Save screenshot…" Click="OnSaveScreenshot" ToolTip="Save the screen as a PNG (Ctrl+Shift+S)" />
                     <ComboBox x:Name="ThemeBox" Width="80" SelectionChanged="OnThemeChanged" VerticalContentAlignment="Center" />

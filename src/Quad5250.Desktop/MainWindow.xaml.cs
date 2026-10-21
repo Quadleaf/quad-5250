@@ -37,6 +37,42 @@ public partial class MainWindow : Window
         Terminal.FunctionKeyClicked += aid => _ = PressAidAsync(aid);
 
         Loaded += (_, _) => (string.IsNullOrEmpty(HostBox.Text) ? (UIElement)HostBox : Terminal).Focus();
+        Loaded += async (_, _) => ShowUpdate(await _updates.DownloadAsync());
+
+        var version = typeof(MainWindow).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion;
+        // Drop the "+commit" suffix the SDK appends.
+        if (version is not null) Title = $"Quad 5250 {version.Split('+')[0]}";
+    }
+
+    // ---- Updates ---------------------------------------------------------
+
+    private readonly AppUpdates _updates = new();
+
+    private void ShowUpdate(string? version)
+    {
+        if (version is null) return;
+        UpdateButton.Content = $"Restart to update ({version})";
+        UpdateButton.Visibility = Visibility.Visible;
+    }
+
+    private void OnApplyUpdate(object sender, RoutedEventArgs e)
+    {
+        // Velopack stops every process running from the install folder while
+        // it swaps versions, including an MCP server Claude has open.
+        var mcpRunning = System.Diagnostics.Process.GetProcessesByName("Quad5250.Mcp").Length > 0;
+        var warnings = new List<string>();
+        if (_session is { IsConnected: true })
+            warnings.Add("Restarting ends the current 5250 session. Sign off first if you're in the middle of something.");
+        if (mcpRunning)
+            warnings.Add("Claude's 5250 connection (the MCP server) will also stop; reconnect it in Claude afterwards (/mcp).");
+
+        if (warnings.Count > 0 &&
+            MessageBox.Show(this, string.Join("\n\n", warnings) + "\n\nRestart now?",
+                "Quad 5250", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+            return;
+        _updates.ApplyAndRestart();
     }
 
     // ---- Connection ------------------------------------------------------

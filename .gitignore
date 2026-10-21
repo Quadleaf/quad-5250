@@ -27,6 +27,8 @@ artifacts/
 node_modules/
 dist/
 build/
+# ...but the repo-root build/ holds the installer scripts.
+!/build/
 .vite/
 .cache/
 coverage/

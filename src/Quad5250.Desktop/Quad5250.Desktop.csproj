@@ -7,7 +7,23 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyTitle>Quad 5250</AssemblyTitle>
+    <!-- Custom Main (App.xaml.cs) so Velopack's install/update hooks run before WPF starts. -->
+    <StartupObject>Quad5250.Desktop.App</StartupObject>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Velopack" Version="1.2.161" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Release feed baked in at pack time: dotnet publish -p:UpdateFeedUrl=https://... -->
+    <AssemblyMetadata Include="UpdateFeedUrl" Value="$(UpdateFeedUrl)" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Quad5250.Protocol\Quad5250.Protocol.csproj" />
