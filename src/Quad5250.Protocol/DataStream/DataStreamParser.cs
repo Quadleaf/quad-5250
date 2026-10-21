@@ -29,7 +29,9 @@ public sealed class DataStreamParser
     private readonly ScreenBuffer _screen;
     private readonly EbcdicTranslator _ebcdic;
     private readonly Queue<byte[]> _pendingResponses = new();
-    private bool _keyboardUnlocked;
+    // Last keyboard effect in the current record: commands apply in order,
+    // so a WTD that locks (CC1) and then unlocks (CC2) ends up unlocked.
+    private KeyboardEffect _keyboard;
     private bool _readRequested;
 
     public DataStreamParser(ScreenBuffer screen, EbcdicTranslator ebcdic)
@@ -61,7 +63,7 @@ public sealed class DataStreamParser
     /// </summary>
     public ApplyResult Apply(ReadOnlySpan<byte> record)
     {
-        _keyboardUnlocked = false;
+        _keyboard = KeyboardEffect.None;
         _readRequested = false;
         if (record.Length <= HeaderLength) return default;
         var data = record[HeaderLength..];
@@ -106,6 +108,7 @@ public sealed class DataStreamParser
                     // Only after the 0x04 class prefix: these values can also
                     // turn up among the unknown bytes this loop skips.
                     _readRequested = true;
+                    _keyboard = KeyboardEffect.Unlock;
                     i++;
                     break;
                 default:
@@ -120,7 +123,7 @@ public sealed class DataStreamParser
         // mix inline attribute bytes with SF orders both produce input fields.
         _screen.ResolveAttributes();
         _screen.RebuildFields();
-        return new ApplyResult(_keyboardUnlocked, _readRequested);
+        return new ApplyResult(_keyboard, _readRequested);
     }
 
     private int ApplyWriteStructuredField(ReadOnlySpan<byte> data, int i)
@@ -146,11 +149,19 @@ public sealed class DataStreamParser
 
     private int ApplyWriteToDisplay(ReadOnlySpan<byte> data, int i)
     {
-        // Two control characters follow the command. CC2 bit 0x08 unlocks the
-        // keyboard (the IBM i we test against ends every input screen with CC2 = 0x18); the
-        // rest (MDT reset, blink, alarm) isn't acted on yet.
+        // Two control characters follow the command. CC1's top three bits
+        // reset MDT flags and/or null fields before any data is written, and
+        // any non-zero value locks the keyboard. CC2 bit 0x08 unlocks it at
+        // the end of the write (the IBM i we test against ends every input
+        // screen with CC2 = 0x18). Blink and alarm bits aren't acted on.
         if (i + 2 > data.Length) return data.Length;
-        if ((data[i + 1] & 0x08) != 0) _keyboardUnlocked = true;
+        var cc1 = data[i];
+        if ((cc1 & 0xE0) != 0)
+        {
+            _screen.ApplyResetControl(cc1);
+            _keyboard = KeyboardEffect.Lock;
+        }
+        if ((data[i + 1] & 0x08) != 0) _keyboard = KeyboardEffect.Unlock;
         i += 2;
 
         while (i < data.Length)
@@ -319,9 +330,14 @@ public sealed class DataStreamParser
     }
 }
 
+public enum KeyboardEffect { None, Lock, Unlock }
+
 /// <summary>What a host record asked of the terminal, beyond drawing.</summary>
-public readonly record struct ApplyResult(bool KeyboardUnlocked, bool ReadRequested)
+public readonly record struct ApplyResult(KeyboardEffect Keyboard, bool ReadRequested)
 {
     /// <summary>The operator may type and press an AID key again.</summary>
-    public bool ReleasesKeyboard => KeyboardUnlocked || ReadRequested;
+    public bool ReleasesKeyboard => Keyboard == KeyboardEffect.Unlock;
+
+    /// <summary>The host locked the keyboard (a WTD reset control) and didn't release it.</summary>
+    public bool LocksKeyboard => Keyboard == KeyboardEffect.Lock;
 }

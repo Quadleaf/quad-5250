@@ -129,7 +129,7 @@ public class DataStreamParserTests
 
         var result = p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x00, 0x18, 0xC1));
 
-        Assert.True(result.KeyboardUnlocked);
+        Assert.Equal(KeyboardEffect.Unlock, result.Keyboard);
         Assert.True(result.ReleasesKeyboard);
     }
 
@@ -152,8 +152,92 @@ public class DataStreamParserTests
         var result = p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x00, 0x00, 0xC1, 0x04, Cmd.ReadMdtFields, 0x00, 0x00));
 
         Assert.True(result.ReadRequested);
-        Assert.False(result.KeyboardUnlocked);
         Assert.True(result.ReleasesKeyboard);
+    }
+
+    /// <summary>
+    /// Three input fields with text: [0] non-bypass the operator changed,
+    /// [1] non-bypass the host sent with MDT on, [2] bypass with MDT on,
+    /// plus [3] non-bypass untouched.
+    /// </summary>
+    private static (DataStreamParser Parser, ScreenBuffer Screen) FieldsForReset()
+    {
+        var (p, s) = NewParser();
+        p.Apply(Record(
+            0x04, Cmd.ClearUnit,
+            0x04, Cmd.WriteToDisplay, 0x00, 0x18,
+            Order.SetBufferAddress, 0x05, 0x0A, Order.StartOfField, 0x40, 0x00, 0x24, 0x00, 0x03, 0xC1, 0xC1, 0xC1,
+            Order.SetBufferAddress, 0x06, 0x0A, Order.StartOfField, 0x48, 0x00, 0x24, 0x00, 0x03, 0xC2, 0xC2, 0xC2,
+            Order.SetBufferAddress, 0x07, 0x0A, Order.StartOfField, 0x68, 0x00, 0x24, 0x00, 0x03, 0xC3, 0xC3, 0xC3,
+            Order.SetBufferAddress, 0x08, 0x0A, Order.StartOfField, 0x40, 0x00, 0x24, 0x00, 0x03, 0xC4, 0xC4, 0xC4));
+        new Quad5250.Protocol.Input.FieldEditor(s).FillField(s.Fields[0], "XYZ");
+        return (p, s);
+    }
+
+    private static string Text(ScreenBuffer s, int field)
+    {
+        var f = s.Fields[field];
+        return new string(Enumerable.Range(0, f.Length).Select(i => s[f.Row, f.Col + i].Char).ToArray());
+    }
+
+    [Fact]
+    public void Cc1_ResetMdtNonBypass_KeepsBypassMdtAndText()
+    {
+        var (p, s) = FieldsForReset();
+        Assert.True(s.IsModified(s.Fields[0]) && s.IsModified(s.Fields[1]) && s.IsModified(s.Fields[2]));
+
+        var result = p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x40, 0x18));
+
+        Assert.False(s.IsModified(s.Fields[0]));
+        Assert.False(s.IsModified(s.Fields[1]));
+        Assert.True(s.IsModified(s.Fields[2]));
+        Assert.Equal("XYZ", Text(s, 0));
+        Assert.True(result.ReleasesKeyboard);
+    }
+
+    [Fact]
+    public void Cc1_ResetMdtAll_IncludesBypass()
+    {
+        var (p, s) = FieldsForReset();
+
+        p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x60, 0x18));
+
+        Assert.All(s.Fields, f => Assert.False(s.IsModified(f)));
+    }
+
+    [Fact]
+    public void Cc1_NullModified_BlanksOnlyModifiedNonBypassFields_KeepsMdt()
+    {
+        var (p, s) = FieldsForReset();
+
+        p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x80, 0x18));
+
+        Assert.Equal("   ", Text(s, 0));
+        Assert.Equal("   ", Text(s, 1));
+        Assert.Equal("CCC", Text(s, 2));   // bypass: never nulled
+        Assert.Equal("DDD", Text(s, 3));   // not modified
+        Assert.True(s.IsModified(s.Fields[0]));
+    }
+
+    [Fact]
+    public void Cc1_ResetAndNullAll_ClearsEveryNonBypassField()
+    {
+        var (p, s) = FieldsForReset();
+
+        p.Apply(Record(0x04, Cmd.WriteToDisplay, 0xE0, 0x18));
+
+        Assert.Equal("   ", Text(s, 3));
+        Assert.Equal("CCC", Text(s, 2));
+        Assert.All(s.Fields, f => Assert.False(s.IsModified(f)));
+    }
+
+    [Fact]
+    public void Cc1_LocksKeyboard_UnlessCc2ReleasesIt()
+    {
+        var (p, _) = NewParser();
+
+        Assert.True(p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x20, 0x00, 0xC1)).LocksKeyboard);
+        Assert.True(p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x20, 0x08, 0xC1)).ReleasesKeyboard);
     }
 
     [Fact]
