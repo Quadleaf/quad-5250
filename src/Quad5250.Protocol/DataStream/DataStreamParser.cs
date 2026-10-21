@@ -24,10 +24,13 @@ namespace Quad5250.Protocol.DataStream;
 public sealed class DataStreamParser
 {
     private const int HeaderLength = 8;
+    private const byte ClassPrefix = 0x04;
 
     private readonly ScreenBuffer _screen;
     private readonly EbcdicTranslator _ebcdic;
     private readonly Queue<byte[]> _pendingResponses = new();
+    private bool _keyboardUnlocked;
+    private bool _readRequested;
 
     public DataStreamParser(ScreenBuffer screen, EbcdicTranslator ebcdic)
     {
@@ -51,9 +54,16 @@ public sealed class DataStreamParser
         return false;
     }
 
-    public void Apply(ReadOnlySpan<byte> record)
+    /// <summary>
+    /// Apply one host record. The result says whether the host released the
+    /// keyboard: a Write to Display whose second control character has the
+    /// unlock bit, or a Read command (the host is waiting for an AID key).
+    /// </summary>
+    public ApplyResult Apply(ReadOnlySpan<byte> record)
     {
-        if (record.Length <= HeaderLength) return;
+        _keyboardUnlocked = false;
+        _readRequested = false;
+        if (record.Length <= HeaderLength) return default;
         var data = record[HeaderLength..];
 
         int i = 0;
@@ -74,6 +84,30 @@ public sealed class DataStreamParser
                 case Cmd.WriteStructuredField:
                     i = ApplyWriteStructuredField(data, i + 1);
                     break;
+                case Cmd.SaveScreen or Cmd.SavePartialScreen
+                    when i > 0 && data[i - 1] == ClassPrefix:
+                    // The host is about to open a window and waits for the
+                    // screen image before going on. A partial save gets the
+                    // whole screen: restoring all of it is a superset.
+                    _pendingResponses.Enqueue(InboundRecord.Build(
+                        [ClassPrefix, Cmd.RestoreScreen, .. _screen.ToDataStream(_ebcdic.ToEbcdic)]));
+                    i++;
+                    // Skip a partial save's area parameters up to the next command.
+                    while (i < data.Length && data[i] != ClassPrefix) i++;
+                    break;
+                case Cmd.RestoreScreen or Cmd.RestorePartialScreen
+                    when i > 0 && data[i - 1] == ClassPrefix:
+                    // What follows is the stream we sent for Save Screen
+                    // (Clear Unit, Write to Display, ...): it replays as-is.
+                    i++;
+                    break;
+                case Cmd.ReadInputFields or Cmd.ReadMdtFields or Cmd.ReadMdtAlt
+                    when i > 0 && data[i - 1] == ClassPrefix:
+                    // Only after the 0x04 class prefix: these values can also
+                    // turn up among the unknown bytes this loop skips.
+                    _readRequested = true;
+                    i++;
+                    break;
                 default:
                     // Skip unknown wrapper bytes (e.g. inline class prefixes).
                     i++;
@@ -86,6 +120,7 @@ public sealed class DataStreamParser
         // mix inline attribute bytes with SF orders both produce input fields.
         _screen.ResolveAttributes();
         _screen.RebuildFields();
+        return new ApplyResult(_keyboardUnlocked, _readRequested);
     }
 
     private int ApplyWriteStructuredField(ReadOnlySpan<byte> data, int i)
@@ -111,8 +146,11 @@ public sealed class DataStreamParser
 
     private int ApplyWriteToDisplay(ReadOnlySpan<byte> data, int i)
     {
-        // 2 control character bytes follow the command; ignore for first pass.
+        // Two control characters follow the command. CC2 bit 0x08 unlocks the
+        // keyboard (the IBM i we test against ends every input screen with CC2 = 0x18); the
+        // rest (MDT reset, blink, alarm) isn't acted on yet.
         if (i + 2 > data.Length) return data.Length;
+        if ((data[i + 1] & 0x08) != 0) _keyboardUnlocked = true;
         i += 2;
 
         while (i < data.Length)
@@ -122,7 +160,7 @@ public sealed class DataStreamParser
             // command (ClearUnit, WTD, ReadMDT, etc.). When we see it inside
             // WTD, the WTD payload is over — let the top-level loop pick up
             // the next command.
-            if (b == 0x04) break;
+            if (b == ClassPrefix) break;
 
             if (b < 0x20)
             {
@@ -279,4 +317,11 @@ public sealed class DataStreamParser
         var len = data[i];
         return Math.Min(i + 1 + len, data.Length);
     }
+}
+
+/// <summary>What a host record asked of the terminal, beyond drawing.</summary>
+public readonly record struct ApplyResult(bool KeyboardUnlocked, bool ReadRequested)
+{
+    /// <summary>The operator may type and press an AID key again.</summary>
+    public bool ReleasesKeyboard => KeyboardUnlocked || ReadRequested;
 }

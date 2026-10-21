@@ -231,6 +231,53 @@ public sealed class ScreenBuffer
         }
     }
 
+    /// <summary>
+    /// The screen as a 5250 data stream that redraws it exactly: Clear Unit,
+    /// then one Write to Display re-emitting every attribute byte, SF order
+    /// (fields the operator changed keep their MDT bit) and character, then
+    /// the cursor. Used to answer Save Screen: the host keeps these bytes and
+    /// sends them back with Restore Screen, where they replay like any record.
+    /// </summary>
+    public byte[] ToDataStream(Func<char, byte> toEbcdic)
+    {
+        var o = new List<byte>(_cells.Length + 256)
+        {
+            0x04, 0x40,                    // Clear Unit
+            0x04, 0x11, 0x00, 0x00,        // Write to Display, no control actions
+            0x11, 0x01, 0x01,              // SBA row 1, col 1
+        };
+        for (int i = 0; i < _cells.Length; i++)
+        {
+            var cell = _cells[i];
+            if (!cell.IsAttributeByte)
+            {
+                // Anything that would encode below 0x40 would read back as an
+                // order or attribute byte; blank it instead.
+                var b = cell.Char == ' ' ? (byte)0x40 : toEbcdic(cell.Char);
+                o.Add(b < 0x40 ? (byte)0x40 : b);
+                continue;
+            }
+            if (_attrMarks.TryGetValue(i, out var mark) && mark.FromSf && mark.Length > 0)
+            {
+                o.Add(0x1D);
+                if ((mark.Ffw1 & 0xC0) == 0x40)
+                {
+                    var ffw1 = _operatorModified.Contains(i + 1) ? (byte)(mark.Ffw1 | 0x08) : mark.Ffw1;
+                    o.Add(ffw1);
+                    o.Add(mark.Ffw2);
+                }
+                o.Add(cell.Attribute);
+                o.Add((byte)(mark.Length >> 8));
+                o.Add((byte)mark.Length);
+            }
+            else o.Add(cell.Attribute);
+        }
+        o.Add(0x13);                       // IC: put the cursor back
+        o.Add((byte)(CursorRow + 1));
+        o.Add((byte)(CursorCol + 1));
+        return o.ToArray();
+    }
+
     /// <summary>Immutable copy of everything a renderer needs, safe to hand to another thread.</summary>
     public ScreenSnapshot TakeSnapshot(bool keyboardLocked = false)
         => new(Rows, Cols, CursorRow, CursorCol, Snapshot(), _fields.ToArray(),

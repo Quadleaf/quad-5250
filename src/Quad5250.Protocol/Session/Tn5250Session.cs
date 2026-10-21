@@ -26,7 +26,9 @@ public sealed class Tn5250Session : IAsyncDisposable
     // Guards the screen buffer: the read loop applies host records while the
     // UI thread edits fields and takes snapshots.
     private readonly object _sync = new();
-    private bool _keyboardLocked;
+    // Locked until the host's first screen releases it, like a terminal at power-on.
+    private bool _keyboardLocked = true;
+    private long _lastRecordAt = Environment.TickCount64;
 
     private CancellationTokenSource? _cts;
     private Task? _runTask;
@@ -37,9 +39,10 @@ public sealed class Tn5250Session : IAsyncDisposable
     public bool IsConnected => !_disconnected;
 
     /// <summary>
-    /// True from an AID key until the host's next record. A real 5250 waits
-    /// for the WTD control character's keyboard-unlock bit; we unlock on any
-    /// record, which is what the browser client has always done.
+    /// True from an AID key until the host releases the keyboard: a Write to
+    /// Display with the unlock bit or a Read command. Intermediate records
+    /// (a first draw, the message light) leave it locked, so a screen that
+    /// arrives in pieces isn't treated as ready halfway through.
     /// </summary>
     public bool IsKeyboardLocked { get { lock (_sync) return _keyboardLocked; } }
 
@@ -75,9 +78,10 @@ public sealed class Tn5250Session : IAsyncDisposable
                 _log.LogInformation("Applying record ({Length} bytes)", record.Length);
                 lock (_sync)
                 {
-                    _parser.Apply(record.Span);
+                    var result = _parser.Apply(record.Span);
                     _editor.OnHostWrite();
-                    _keyboardLocked = false;
+                    if (result.ReleasesKeyboard) _keyboardLocked = false;
+                    _lastRecordAt = Environment.TickCount64;
                 }
                 ScreenChanged?.Invoke();
 
@@ -183,6 +187,31 @@ public sealed class Tn5250Session : IAsyncDisposable
     public T Read<T>(Func<FieldEditor, ScreenBuffer, T> read)
     {
         lock (_sync) return read(_editor, Screen);
+    }
+
+    /// <summary>
+    /// Wait until the host has released the keyboard and gone quiet for
+    /// <paramref name="quiet"/>, so the screen is complete. Returns false on
+    /// timeout (host still busy) or disconnect; the screen is then partial.
+    /// </summary>
+    public async Task<bool> WaitForInputReadyAsync(TimeSpan timeout, TimeSpan? quiet = null, CancellationToken ct = default)
+    {
+        var quietMs = (long)(quiet ?? TimeSpan.FromMilliseconds(150)).TotalMilliseconds;
+        var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+        while (true)
+        {
+            bool locked;
+            long sinceLast;
+            lock (_sync)
+            {
+                locked = _keyboardLocked;
+                sinceLast = Environment.TickCount64 - _lastRecordAt;
+            }
+            if (_disconnected) return false;
+            if (!locked && sinceLast >= quietMs) return true;
+            if (Environment.TickCount64 >= deadline) return false;
+            await Task.Delay(50, ct);
+        }
     }
 
     public ScreenSnapshot GetSnapshot()

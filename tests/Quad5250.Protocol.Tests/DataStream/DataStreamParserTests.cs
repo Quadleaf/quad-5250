@@ -123,6 +123,89 @@ public class DataStreamParserTests
     }
 
     [Fact]
+    public void Wtd_WithUnlockBit_ReleasesKeyboard()
+    {
+        var (p, _) = NewParser();
+
+        var result = p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x00, 0x18, 0xC1));
+
+        Assert.True(result.KeyboardUnlocked);
+        Assert.True(result.ReleasesKeyboard);
+    }
+
+    [Fact]
+    public void Wtd_WithoutUnlockBit_KeepsKeyboardLocked()
+    {
+        // Main Menu's first WTD (CC2 = 0x00) draws the screen but doesn't release it.
+        var (p, _) = NewParser();
+
+        var result = p.Apply(Record(0x04, Cmd.ClearUnit, 0x04, Cmd.WriteToDisplay, 0x00, 0x00, 0xC1));
+
+        Assert.False(result.ReleasesKeyboard);
+    }
+
+    [Fact]
+    public void ReadMdtCommand_AfterClassPrefix_RequestsRead()
+    {
+        var (p, _) = NewParser();
+
+        var result = p.Apply(Record(0x04, Cmd.WriteToDisplay, 0x00, 0x00, 0xC1, 0x04, Cmd.ReadMdtFields, 0x00, 0x00));
+
+        Assert.True(result.ReadRequested);
+        Assert.False(result.KeyboardUnlocked);
+        Assert.True(result.ReleasesKeyboard);
+    }
+
+    [Fact]
+    public void ReadCommandByte_WithoutClassPrefix_IsIgnored()
+    {
+        var (p, _) = NewParser();
+
+        var result = p.Apply(Record(0x00, Cmd.ReadMdtFields, 0x00, 0x00));
+
+        Assert.False(result.ReadRequested);
+    }
+
+    [Fact]
+    public void SaveScreen_RepliesWithStreamThatRestoreReplays()
+    {
+        var (p, s) = NewParser();
+        // A screen with a label, an input field holding host text, an
+        // output-only field and the cursor on the input field.
+        p.Apply(Record(
+            0x04, Cmd.ClearUnit,
+            0x04, Cmd.WriteToDisplay, 0x00, 0x18,
+            Order.SetBufferAddress, 0x02, 0x02, 0x22, 0xC1, 0xC2,          // "AB" highlighted
+            Order.SetBufferAddress, 0x05, 0x0A,
+            Order.StartOfField, 0x40, 0x20, 0x24, 0x00, 0x04, 0xC3,        // input "C", monocase
+            Order.SetBufferAddress, 0x07, 0x0A,
+            Order.StartOfField, 0x22, 0x00, 0x03, 0xC4,                    // output-only "D"
+            Order.InsertCursor, 0x05, 0x0B));
+        new Quad5250.Protocol.Input.FieldEditor(s).FillField(s.Fields[0], "XY");
+        var before = s.TakeSnapshot();
+
+        // Save Screen: the reply is a Put/Get record carrying 04 12 + the stream.
+        p.Apply(Record(0x04, Cmd.SaveScreen));
+        Assert.True(p.TryDequeueResponse(out var reply));
+        Assert.Equal(reply.Length, (reply[0] << 8) | reply[1]);
+        Assert.Equal(new byte[] { 0x12, 0xA0, 0x00, 0x00, 0x04, 0x00, 0x00, 0x03, 0x04, Cmd.RestoreScreen }, reply[2..12]);
+
+        // A window draws over the screen, then the host restores it by
+        // sending our bytes back.
+        p.Apply(Record(0x04, Cmd.ClearUnit, 0x04, Cmd.WriteToDisplay, 0x00, 0x00, 0xE6));
+        p.Apply(Record(reply[10..]));
+        var after = s.TakeSnapshot();
+
+        Assert.Equal(before.Cells, after.Cells);
+        // Restored fields match, except that the operator's change now rides
+        // on the FFW MDT bit (0x08), which is what keeps it "modified".
+        Assert.Equal(before.Fields, after.Fields.Select(f => f with { Ffw1 = (byte)(f.Ffw1 & ~0x08) }));
+        Assert.Equal((before.CursorRow, before.CursorCol), (after.CursorRow, after.CursorCol));
+        Assert.True(after.IsModified(after.Fields[0]));
+        Assert.False(after.Fields[1].IsInput);
+    }
+
+    [Fact]
     public void HeaderOnly_Record_IsNoOp()
     {
         var (p, s) = NewParser();
