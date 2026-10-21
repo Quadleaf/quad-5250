@@ -129,7 +129,8 @@ Implemented, with unit tests, and exercised against a live IBM i (sign-on, menus
 - Write to Display with Start of Field (field format words, field control words, output-only fields),
   Set Buffer Address, Insert Cursor, Repeat to Address, Erase to Address, and attribute bytes. A cell takes
   its attribute from the nearest attribute byte before it, bounded by the field's length.
-- The keyboard unlocks on the Write to Display unlock bit or a Read command.
+- The keyboard unlocks on the Write to Display unlock bit or a Read command. The first control byte's
+  resets apply before each write: clearing modified flags and nulling fields, and locking the keyboard.
 - Read MDT responses with the modified fields, including host-set MDT, for Enter, F1-F24, Roll, Clear,
   Help and Print.
 - Save Screen / Restore Screen, which pop-up windows use.
@@ -137,12 +138,12 @@ Implemented, with unit tests, and exercised against a live IBM i (sign-on, menus
 
 Known gaps:
 
-- The Write to Display control byte's MDT reset and null-field bits are not applied.
 - No insert mode, Dup, Field Exit or Reset keys, and no blinking text. If a host never releases the
   keyboard after a key press, reconnect.
 - 24x80 only; no 27x132.
-- Write to Display Structured Field orders (GUI-style windows, scroll bars) are skipped. Windows the host
-  draws with characters display correctly, but field labels inside them include the border.
+- No enhanced 5250 windows (the Create Window structured field); scroll bars and other structured-field
+  orders are skipped too. On the host we test against, pop-up windows arrive as a Clear Unit followed by a
+  border drawn with characters, so the screen behind a window shows blank, exactly as sent.
 - The web client keeps its own typed-character buffer instead of the protocol library's `FieldEditor`. A
   partial screen write from the host clears its typed input, and editing part of a field blanks the host's
   text in the rest of it.
