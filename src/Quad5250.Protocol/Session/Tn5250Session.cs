@@ -81,6 +81,7 @@ public sealed class Tn5250Session : IAsyncDisposable
                     var result = _parser.Apply(record.Span);
                     _editor.OnHostWrite();
                     if (result.ReleasesKeyboard) _keyboardLocked = false;
+                    else if (result.LocksKeyboard) _keyboardLocked = true;
                     _lastRecordAt = Environment.TickCount64;
                 }
                 ScreenChanged?.Invoke();

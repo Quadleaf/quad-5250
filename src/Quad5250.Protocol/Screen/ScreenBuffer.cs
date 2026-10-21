@@ -103,6 +103,41 @@ public sealed class ScreenBuffer
     }
 
     /// <summary>
+    /// Apply a Write to Display CC1 reset (5494 Functions Reference), to the
+    /// fields already on screen, before the write's data:
+    /// 010 reset MDT in non-bypass fields; 011 reset MDT in all fields;
+    /// 100 null non-bypass fields with MDT on; 101 reset MDT non-bypass and
+    /// null all non-bypass; 110 reset MDT non-bypass and null non-bypass
+    /// with MDT on; 111 reset MDT in all fields and null all non-bypass.
+    /// Nulled cells read as blanks, the same as NULL bytes from the host.
+    /// </summary>
+    public void ApplyResetControl(byte cc1)
+    {
+        var mode = cc1 & 0xE0;
+        var nullModified = mode is 0x80 or 0xC0;
+        var nullAll = mode is 0xA0 or 0xE0;
+        var resetNonBypass = mode is 0x40 or 0xA0 or 0xC0;
+        var resetAll = mode is 0x60 or 0xE0;
+
+        foreach (var f in _fields)
+        {
+            if (!f.IsInput) continue;
+            var start = f.StartIndex(Cols);
+            // Decide nulling from the MDT state before this control resets it.
+            if (!f.IsBypass && (nullAll || (nullModified && IsModified(f))))
+                for (int i = 0; i < f.Length; i++) SetCharAt(start + i, ' ');
+
+            if (resetAll || (resetNonBypass && !f.IsBypass))
+            {
+                _operatorModified.Remove(start);
+                var attrIndex = start - 1;
+                if (_attrMarks.TryGetValue(attrIndex, out var mark) && (mark.Ffw1 & 0x08) != 0)
+                    _attrMarks[attrIndex] = mark with { Ffw1 = (byte)(mark.Ffw1 & ~0x08) };
+            }
+        }
+    }
+
+    /// <summary>
     /// Give every cell the attribute of the nearest attribute byte before it.
     /// On a 5250 an attribute byte governs all following positions up to the
     /// next one, whatever order the host wrote them in — e.g. an attribute

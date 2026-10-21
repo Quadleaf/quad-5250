@@ -91,8 +91,14 @@ public static partial class ScreenDescription
         var text = rowText[start..end];
 
         var segment = WideGap().Split(text.Trim()).LastOrDefault() ?? "";
+        // A field inside a host-drawn window has the window's left border
+        // (":" or ".") before its prompt: ":  Select Confirmed/Unconfirmed/All".
+        segment = WindowBorder().Replace(segment, "");
         return Leader().Replace(segment, "").Trim();
     }
+
+    [GeneratedRegex(@"^[:.]+\s+")]
+    private static partial Regex WindowBorder();
 
     [GeneratedRegex(@"\s{3,}")]
     private static partial Regex WideGap();
