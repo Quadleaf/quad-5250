@@ -1,9 +1,13 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Quad5250.Desktop/Quad5250.Desktop.csproj" />
+    <Project Path="src/Quad5250.Mcp/Quad5250.Mcp.csproj" />
     <Project Path="src/Quad5250.Protocol/Quad5250.Protocol.csproj" />
+    <Project Path="src/Quad5250.Rendering/Quad5250.Rendering.csproj" />
     <Project Path="src/Quad5250.Server/Quad5250.Server.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Quad5250.Mcp.Tests/Quad5250.Mcp.Tests.csproj" />
     <Project Path="tests/Quad5250.Protocol.Tests/Quad5250.Protocol.Tests.csproj" />
   </Folder>
 </Solution>

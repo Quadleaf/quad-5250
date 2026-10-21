@@ -1,0 +1,117 @@
+# Builds the Quad 5250 installer (desktop client + MCP server, one Velopack
+# package) with build/pack.ps1, the same script used locally.
+#
+# - Pull requests and manual runs: test, build the installer, attach it to
+#   the run as an artifact.
+# - Tags v1.2.3: the same, plus a published GitHub Release named for the
+#   version, carrying Setup.exe and the update files. The previous release is
+#   downloaded first so the package includes a small delta update.
+name: Installer
+
+on:
+  pull_request:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, e.g. 1.2.0 (default 0.0.<run number>)"
+        required: false
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  VPK_VERSION: "1.2.161"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Pick the version
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $v = $env:GITHUB_REF_NAME.TrimStart('v') }
+          elseif ($env:INPUT_VERSION) { $v = $env:INPUT_VERSION.Trim() }
+          else { $v = "0.0.$env:GITHUB_RUN_NUMBER" }
+          if ($v -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "Version '$v' isn't semantic (1.2.3 or 1.2.3-beta.1)."
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: dotnet test Quad5250.slnx -c Release
+
+      - name: Install vpk
+        shell: pwsh
+        run: |
+          dotnet tool install -g vpk --version $env:VPK_VERSION
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      # Releases only: Velopack builds a delta against whatever release it
+      # finds in the output folder. The very first release has none.
+      - name: Download the previous release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vpk download github --repoUrl "https://github.com/$env:GITHUB_REPOSITORY" --token $env:GH_TOKEN -o artifacts/releases
+          if ($LASTEXITCODE -ne 0) { Write-Host "No previous release found; building a full package only." }
+          exit 0
+
+      - name: Build the installer
+        shell: pwsh
+        env:
+          # Repository variable; empty means installed copies never check for updates.
+          UPDATE_FEED_URL: ${{ vars.UPDATE_FEED_URL }}
+        run: ./build/pack.ps1 -Version "${{ steps.version.outputs.version }}" -UpdateFeedUrl "$env:UPDATE_FEED_URL"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quad5250-${{ steps.version.outputs.version }}
+          path: artifacts/releases
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: quad5250-${{ needs.build.outputs.version }}
+          path: artifacts/releases
+
+      - name: Publish the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          dotnet tool install -g vpk --version $env:VPK_VERSION
+          & "$env:USERPROFILE\.dotnet\tools\vpk.exe" upload github `
+            --repoUrl "https://github.com/$env:GITHUB_REPOSITORY" --token $env:GH_TOKEN `
+            -o artifacts/releases --tag $env:GITHUB_REF_NAME --releaseName "Quad 5250 $env:VERSION" --publish
+          if ($LASTEXITCODE -ne 0) { throw "vpk upload failed" }

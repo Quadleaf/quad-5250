@@ -24,10 +24,13 @@ namespace Quad5250.Protocol.DataStream;
 public sealed class DataStreamParser
 {
     private const int HeaderLength = 8;
+    private const byte ClassPrefix = 0x04;
 
     private readonly ScreenBuffer _screen;
     private readonly EbcdicTranslator _ebcdic;
     private readonly Queue<byte[]> _pendingResponses = new();
+    private bool _keyboardUnlocked;
+    private bool _readRequested;
 
     public DataStreamParser(ScreenBuffer screen, EbcdicTranslator ebcdic)
     {
@@ -51,9 +54,16 @@ public sealed class DataStreamParser
         return false;
     }
 
-    public void Apply(ReadOnlySpan<byte> record)
+    /// <summary>
+    /// Apply one host record. The result says whether the host released the
+    /// keyboard: a Write to Display whose second control character has the
+    /// unlock bit, or a Read command (the host is waiting for an AID key).
+    /// </summary>
+    public ApplyResult Apply(ReadOnlySpan<byte> record)
     {
-        if (record.Length <= HeaderLength) return;
+        _keyboardUnlocked = false;
+        _readRequested = false;
+        if (record.Length <= HeaderLength) return default;
         var data = record[HeaderLength..];
 
         int i = 0;
@@ -74,6 +84,30 @@ public sealed class DataStreamParser
                 case Cmd.WriteStructuredField:
                     i = ApplyWriteStructuredField(data, i + 1);
                     break;
+                case Cmd.SaveScreen or Cmd.SavePartialScreen
+                    when i > 0 && data[i - 1] == ClassPrefix:
+                    // The host is about to open a window and waits for the
+                    // screen image before going on. A partial save gets the
+                    // whole screen: restoring all of it is a superset.
+                    _pendingResponses.Enqueue(InboundRecord.Build(
+                        [ClassPrefix, Cmd.RestoreScreen, .. _screen.ToDataStream(_ebcdic.ToEbcdic)]));
+                    i++;
+                    // Skip a partial save's area parameters up to the next command.
+                    while (i < data.Length && data[i] != ClassPrefix) i++;
+                    break;
+                case Cmd.RestoreScreen or Cmd.RestorePartialScreen
+                    when i > 0 && data[i - 1] == ClassPrefix:
+                    // What follows is the stream we sent for Save Screen
+                    // (Clear Unit, Write to Display, ...): it replays as-is.
+                    i++;
+                    break;
+                case Cmd.ReadInputFields or Cmd.ReadMdtFields or Cmd.ReadMdtAlt
+                    when i > 0 && data[i - 1] == ClassPrefix:
+                    // Only after the 0x04 class prefix: these values can also
+                    // turn up among the unknown bytes this loop skips.
+                    _readRequested = true;
+                    i++;
+                    break;
                 default:
                     // Skip unknown wrapper bytes (e.g. inline class prefixes).
                     i++;
@@ -84,7 +118,9 @@ public sealed class DataStreamParser
         // Fields are derived from attribute byte positions on the screen, not
         // tracked incrementally — rebuild after every record so menus that
         // mix inline attribute bytes with SF orders both produce input fields.
+        _screen.ResolveAttributes();
         _screen.RebuildFields();
+        return new ApplyResult(_keyboardUnlocked, _readRequested);
     }
 
     private int ApplyWriteStructuredField(ReadOnlySpan<byte> data, int i)
@@ -110,8 +146,11 @@ public sealed class DataStreamParser
 
     private int ApplyWriteToDisplay(ReadOnlySpan<byte> data, int i)
     {
-        // 2 control character bytes follow the command; ignore for first pass.
+        // Two control characters follow the command. CC2 bit 0x08 unlocks the
+        // keyboard (the IBM i we test against ends every input screen with CC2 = 0x18); the
+        // rest (MDT reset, blink, alarm) isn't acted on yet.
         if (i + 2 > data.Length) return data.Length;
+        if ((data[i + 1] & 0x08) != 0) _keyboardUnlocked = true;
         i += 2;
 
         while (i < data.Length)
@@ -121,7 +160,7 @@ public sealed class DataStreamParser
             // command (ClearUnit, WTD, ReadMDT, etc.). When we see it inside
             // WTD, the WTD payload is over — let the top-level loop pick up
             // the next command.
-            if (b == 0x04) break;
+            if (b == ClassPrefix) break;
 
             if (b < 0x20)
             {
@@ -206,7 +245,10 @@ public sealed class DataStreamParser
         if (i + 3 > data.Length) return data.Length;
         var endRow = data[i] - 1;
         var endCol = data[i + 1] - 1;
-        var ch = _ebcdic.ToUnicode(data[i + 2]);
+        // A NULL fill (Sign On repaints its Password field this way) displays
+        // as space, matching how WTD treats NULL bytes; '\0' in the buffer
+        // would otherwise read as content in fields and in screen text.
+        var ch = data[i + 2] == 0x00 ? ' ' : _ebcdic.ToUnicode(data[i + 2]);
 
         var endIndex = endRow * _screen.Cols + endCol;
         var curIndex = _screen.BufferRow * _screen.Cols + _screen.BufferCol;
@@ -237,23 +279,35 @@ public sealed class DataStreamParser
 
     private int ApplyStartOfField(ReadOnlySpan<byte> data, int i)
     {
-        // Observed SF format from real IBM i traffic:
-        //   1D <FFW1> <FFW2> <AttrByte> <LenHi> <LenLo>
+        // SF format (5494 Functions Reference):
+        //   1D [FFW1 FFW2] [FCW1 FCW2]* <AttrByte> <LenHi> <LenLo>
+        // The FFW is present when its first byte's top bits are 01; without it
+        // the field is output-only. FCW pairs (top bits 10) are optional and
+        // carry features we don't act on, so they're skipped. The attribute
+        // byte (top bits 00, 0x20-0x3F) is never ambiguous with either.
         // FFW info, the explicit field length, and a fromSf marker are all
         // recorded with the attribute mark so RebuildFields can build a
         // FieldDefinition without scanning. Length matters for fields where
         // NULLs (not attribute bytes) pad to the next SF — Sign On's User
         // and Password are 10 cells each but separated by 10 NULL bytes, so
         // the scan would otherwise compute the field as nearly a row long.
-        if (i + 5 > data.Length) return data.Length;
-        var ffw1 = data[i];
-        var ffw2 = data[i + 1];
-        var attrByte = data[i + 2];
-        var length = (data[i + 3] << 8) | data[i + 4];
+        byte ffw1 = 0, ffw2 = 0;
+        if (i < data.Length && (data[i] & 0xC0) == 0x40)
+        {
+            if (i + 2 > data.Length) return data.Length;
+            ffw1 = data[i];
+            ffw2 = data[i + 1];
+            i += 2;
+            while (i < data.Length && (data[i] & 0xC0) == 0x80) i += 2;
+        }
+
+        if (i + 3 > data.Length) return data.Length;
+        var attrByte = data[i];
+        var length = (data[i + 1] << 8) | data[i + 2];
 
         _screen.WriteAttribute(attrByte, ffw1, ffw2, fromSf: true, length: length);
 
-        return i + 5;
+        return i + 3;
     }
 
     private static int SkipStartOfHeader(ReadOnlySpan<byte> data, int i)
@@ -263,4 +317,11 @@ public sealed class DataStreamParser
         var len = data[i];
         return Math.Min(i + 1 + len, data.Length);
     }
+}
+
+/// <summary>What a host record asked of the terminal, beyond drawing.</summary>
+public readonly record struct ApplyResult(bool KeyboardUnlocked, bool ReadRequested)
+{
+    /// <summary>The operator may type and press an AID key again.</summary>
+    public bool ReleasesKeyboard => KeyboardUnlocked || ReadRequested;
 }

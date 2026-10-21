@@ -59,4 +59,6 @@ public sealed class EbcdicTranslator
 
     public int ToEbcdic(ReadOnlySpan<char> unicode, Span<byte> ebcdic)
         => _encoding.GetBytes(unicode, ebcdic);
+
+    public byte[] ToEbcdic(string unicode) => _encoding.GetBytes(unicode);
 }
